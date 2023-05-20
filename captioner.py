@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+
+# add liveness probe asap
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
 logger.info("Loading model...")
 # simpler model: "ydshieh/vit-gpt2-coco-en"
 captioner = pipeline(
@@ -31,7 +38,7 @@ captioner = pipeline(
 )
 logger.info("Done loading model.")
 
-# semaphore = asyncio.Semaphore(5)
+semaphore = asyncio.Semaphore(MAX_WORKERS)
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 
@@ -53,17 +60,24 @@ async def create_caption(image: Image):
         )
 
         raise HTTPException(
-            status_code=400, detail="Maximum of 5 URLs can be processed at once"
+            status_code=400,
+            detail=f"Maximum of {MAX_URLS} URLs can be processed at once",
         )
-    # async with semaphore:
-    loop = asyncio.get_running_loop()
+    async with semaphore:
+        loop = asyncio.get_running_loop()
 
-    start_time = time.time()
-    # get the image url from the json body
-    image_url = image.url
-    caption = await loop.run_in_executor(executor, captioner, image_url)
-    end_time = time.time()
-    duration = end_time - start_time
-    logger.debug("Captioning completed. Time taken: %s seconds.", duration)
+        start_time = time.time()
+        # get the image url from the json body
+        image_url = image.url
+        caption = await loop.run_in_executor(executor, captioner, image_url)
+        end_time = time.time()
+        duration = end_time - start_time
+        logger.debug("Captioning completed. Time taken: %s seconds.", duration)
 
-    return {"caption": caption, "duration": duration}
+        return {"caption": caption, "duration": duration}
+
+
+# add readiness probe
+@app.get("/readyz")
+async def readyz():
+    return {"status": "ok"}
