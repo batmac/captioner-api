@@ -1,5 +1,4 @@
 import asyncio
-import concurrent.futures
 import logging
 import os
 import time
@@ -21,7 +20,6 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 captioner = None  # Placeholder for the captioner pipeline
 is_initialized = asyncio.Event()  # Event to track initialization status
 lock = asyncio.Lock()
@@ -68,14 +66,12 @@ async def create_caption(image: Image):
         )
     async with lock:
         await is_initialized.wait()  # Wait until initialization is completed
-        loop = asyncio.get_running_loop()
 
         start_time = time.time()
         # get the image url from the json body
         image_url = image.url
         try:
-            # caption = await loop.run_in_executor(executor, captioner, *(image_url,))
-            caption = await loop.run_in_executor(executor, captioner, image_url)
+            caption = await asyncio.to_thread(captioner, image_url)
         except Exception as e:
             logger.error("Error during caption generation: %s", str(e))
             raise HTTPException(
