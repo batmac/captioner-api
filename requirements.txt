@@ -1,10 +1,12 @@
 fastapi
 pillow
+requests
 transformers
 torch
 accelerate
 
 uvicorn
 gradio
+pydantic
 
 pillow-heif

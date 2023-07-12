@@ -2,23 +2,28 @@ import asyncio
 import logging
 import os
 import time
-from typing import List, Union
-
-from pillow_heif import register_heif_opener
-
-register_heif_opener()
+from io import BytesIO
+from typing import Optional
 
 import gradio as gr
+import PIL
+import requests
+import torch
 from fastapi import FastAPI, HTTPException
+from pillow_heif import register_heif_opener
 from pydantic import BaseModel, HttpUrl
 from transformers import pipeline
 
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
-MAX_URLS = int(os.getenv("MAX_URLS", 5))
-MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", 200))
+# MAX_URLS = int(os.getenv("MAX_URLS", 5))
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", 2000))
 # https://huggingface.co/models?pipeline_tag=image-to-text&sort=likes
-MODEL = os.getenv("MODEL", "../models/Salesforce/blip-image-captioning-large")
+MODEL = os.getenv("MODEL", "Salesforce/blip-image-captioning-large")
+# simpler model: "ydshieh/vit-gpt2-coco-en"
 
+
+register_heif_opener()
 
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -35,18 +40,29 @@ lock = asyncio.Lock()
 def load_model():
     global captioner
     logger.info("Loading model...")
-    # simpler model: "ydshieh/vit-gpt2-coco-en"
-    captioner = pipeline(
-        "image-to-text",
-        model=MODEL,
-        max_new_tokens=MAX_NEW_TOKENS,
-    )
-    logger.info("Done loading model.")
+    start_time = time.perf_counter()
+    try:
+        device = torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+        logger.info("Using device: %s", device)
+        captioner = pipeline(
+            "image-to-text",
+            model=MODEL,
+            max_new_tokens=MAX_NEW_TOKENS,
+            device=device,
+        )
+    except Exception as e:
+        logger.error("Error loading model: %s", str(e))
+        raise e
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+    logger.info("Done, model loaded in %.2f seconds.", duration)
     is_initialized.set()
-
-
-class Image(BaseModel):
-    url: Union[HttpUrl, List[HttpUrl]]  # url can be a string or a list of strings
 
 
 @app.on_event("startup")
@@ -54,54 +70,65 @@ async def startup_event():
     global app
     asyncio.create_task(asyncio.to_thread(load_model))
     # add gradio interface
-    iface = gr.Interface(fn=captioner_gradapter, inputs="text", outputs=["text"])
-    app = gr.mount_gradio_app(app, iface, path="/gradio")
+    iface = gr.Interface(
+        fn=captioner_gradapter,
+        inputs=[gr.Image(type="pil"), gr.Textbox(lines=1, placeholder="Image URL")],
+        outputs=["text"],
+        allow_flagging="never",
+        interpretation="default",
+        loading_state=True,
+    )
+    app = gr.mount_gradio_app(app, iface, path="/")
 
 
-async def captioner_gradapter(image_url):
+async def captioner_gradapter(image, url):
     await is_initialized.wait()
     async with lock:
-        result = await asyncio.to_thread(captioner, image_url)
+        start_time = time.perf_counter()
+        input = image if image else url
+        result = await asyncio.to_thread(captioner, input)
         caption = result[0]["generated_text"]
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        logger.info("Captioning took %.2f seconds", duration)
     return caption
 
 
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
+class Image(BaseModel):
+    url: Optional[HttpUrl] = None
+    data: Optional[bytes] = None
 
 
 # the image url is passed in as a "url" tag in the json body
 @app.post("/caption/")
 async def create_caption(image: Image):
-    if isinstance(image.url, list) and len(image.url) > MAX_URLS:
-        logger.debug(
-            f"Request with more than {MAX_URLS} URLs received. Refusing the request."
-        )
-
-        raise HTTPException(
-            status_code=400,
-            detail=f"Maximum of {MAX_URLS} URLs can be processed at once",
-        )
     async with lock:
         await is_initialized.wait()  # Wait until initialization is completed
-
-        start_time = time.time()
+        start_time = time.perf_counter()
         # get the image url from the json body
-        image_url = image.url
+        if image.url is not None:
+            image = image.url
+        elif image.data is not None:
+            image = Image.open(BytesIO(image.data))
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid request. Please pass in a valid image URL or image data.",
+            )
+        logger.debug("Received request for image: %s", image)
         try:
-            caption = await asyncio.to_thread(captioner, image_url)
+            caption = await asyncio.to_thread(captioner, str(image))
         except Exception as e:
             logger.error("Error during caption generation: %s", str(e))
             raise HTTPException(
                 status_code=500,
                 detail="An error occurred during caption generation. Please try again later.",
             )
-        end_time = time.time()
+        end_time = time.perf_counter()
         duration = end_time - start_time
         logger.debug("Captioning completed. Time taken: %s seconds.", duration)
 
-        return {"caption": caption, "duration": duration}
+        return {"caption": caption[0]["generated_text"], "duration": duration}
 
 
 # add liveness probe
@@ -116,3 +143,9 @@ async def readyz():
     if not is_initialized.is_set():
         raise HTTPException(status_code=503, detail="Initialization in progress")
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=7860)
