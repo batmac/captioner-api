@@ -2,7 +2,7 @@
 .PHONY: run dockerbuild dockerrun
 
 run:
-	@uvicorn captioner:app
+	@uvicorn captioner:app --reload
 
 dockerbuild:
 	@docker build -t captioner .

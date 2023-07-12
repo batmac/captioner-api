@@ -76,7 +76,6 @@ async def startup_event():
         outputs=["text"],
         allow_flagging="never",
         interpretation="default",
-        loading_state=True,
     )
     app = gr.mount_gradio_app(app, iface, path="/")
 
@@ -148,4 +147,4 @@ async def readyz():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
