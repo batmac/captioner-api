@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from io import BytesIO
+from typing import Optional
 
 import gradio as gr
 import PIL
@@ -39,6 +40,7 @@ lock = asyncio.Lock()
 def load_model():
     global captioner
     logger.info("Loading model...")
+    start_time = time.perf_counter()
     try:
         device = torch.device(
             "cuda"
@@ -57,7 +59,9 @@ def load_model():
     except Exception as e:
         logger.error("Error loading model: %s", str(e))
         raise e
-    logger.info("Done, model loaded.")
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+    logger.info("Done, model loaded in %.2f seconds.", duration)
     is_initialized.set()
 
 
@@ -91,7 +95,8 @@ async def captioner_gradapter(image, url):
 
 
 class Image(BaseModel):
-    url: HttpUrl
+    url: Optional[HttpUrl] = None
+    data: Optional[bytes] = None
 
 
 # the image url is passed in as a "url" tag in the json body
@@ -101,10 +106,18 @@ async def create_caption(image: Image):
         await is_initialized.wait()  # Wait until initialization is completed
         start_time = time.perf_counter()
         # get the image url from the json body
-        image_url = image.url
-        logger.debug("Received request for image: %s", image_url)
+        if image.url is not None:
+            image = image.url
+        elif image.data is not None:
+            image = Image.open(BytesIO(image.data))
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid request. Please pass in a valid image URL or image data.",
+            )
+        logger.debug("Received request for image: %s", image)
         try:
-            caption = await asyncio.to_thread(captioner, str(image_url))
+            caption = await asyncio.to_thread(captioner, str(image))
         except Exception as e:
             logger.error("Error during caption generation: %s", str(e))
             raise HTTPException(
