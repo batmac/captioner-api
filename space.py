@@ -5,6 +5,7 @@ import time
 from typing import List, Union
 
 import gradio as gr
+import torch
 from fastapi import FastAPI, HTTPException
 from pillow_heif import register_heif_opener
 from pydantic import BaseModel, HttpUrl
@@ -37,15 +38,24 @@ def load_model():
     global captioner
     logger.info("Loading model...")
     try:
+        device = torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+        logger.info("Using device: %s", device)
         captioner = pipeline(
             "image-to-text",
             model=MODEL,
             max_new_tokens=MAX_NEW_TOKENS,
+            device=device,
         )
     except Exception as e:
         logger.error("Error loading model: %s", str(e))
         raise e
-    logger.info("Done loading model.")
+    logger.info("Done, model loaded.")
     is_initialized.set()
 
 
@@ -59,16 +69,26 @@ async def startup_event():
     asyncio.create_task(asyncio.to_thread(load_model))
     # add gradio interface
     iface = gr.Interface(
-        fn=captioner_gradapter, inputs="text", outputs=["text"], allow_flagging="never"
+        fn=captioner_gradapter,
+        inputs=[gr.Image(type="pil"), gr.Textbox(lines=1, placeholder="Image URL")],
+        outputs=["text"],
+        allow_flagging="never",
+        interpretation="default",
+        loading_state=True,
     )
     app = gr.mount_gradio_app(app, iface, path="/")
 
 
-async def captioner_gradapter(image_url):
+async def captioner_gradapter(image, url):
     await is_initialized.wait()
     async with lock:
-        result = await asyncio.to_thread(captioner, image_url)
+        start_time = time.perf_counter()
+        input = image if image else url
+        result = await asyncio.to_thread(captioner, input)
         caption = result[0]["generated_text"]
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        logger.info("Captioning took %.2f seconds", duration)
     return caption
 
 
