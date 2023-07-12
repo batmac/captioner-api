@@ -4,21 +4,22 @@ import os
 import time
 from typing import List, Union
 
-from pillow_heif import register_heif_opener
-
-register_heif_opener()
-
 import gradio as gr
 from fastapi import FastAPI, HTTPException
+from pillow_heif import register_heif_opener
 from pydantic import BaseModel, HttpUrl
 from transformers import pipeline
 
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 MAX_URLS = int(os.getenv("MAX_URLS", 5))
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", 200))
 # https://huggingface.co/models?pipeline_tag=image-to-text&sort=likes
-MODEL = os.getenv("MODEL", "../models/Salesforce/blip-image-captioning-large")
+MODEL = os.getenv("MODEL", "Salesforce/blip-image-captioning-large")
+# simpler model: "ydshieh/vit-gpt2-coco-en"
 
+
+register_heif_opener()
 
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -35,12 +36,15 @@ lock = asyncio.Lock()
 def load_model():
     global captioner
     logger.info("Loading model...")
-    # simpler model: "ydshieh/vit-gpt2-coco-en"
-    captioner = pipeline(
-        "image-to-text",
-        model=MODEL,
-        max_new_tokens=MAX_NEW_TOKENS,
-    )
+    try:
+        captioner = pipeline(
+            "image-to-text",
+            model=MODEL,
+            max_new_tokens=MAX_NEW_TOKENS,
+        )
+    except Exception as e:
+        logger.error("Error loading model: %s", str(e))
+        raise e
     logger.info("Done loading model.")
     is_initialized.set()
 
@@ -54,8 +58,10 @@ async def startup_event():
     global app
     asyncio.create_task(asyncio.to_thread(load_model))
     # add gradio interface
-    iface = gr.Interface(fn=captioner_gradapter, inputs="text", outputs=["text"])
-    app = gr.mount_gradio_app(app, iface, path="/gradio")
+    iface = gr.Interface(
+        fn=captioner_gradapter, inputs="text", outputs=["text"], allow_flagging="never"
+    )
+    app = gr.mount_gradio_app(app, iface, path="/")
 
 
 async def captioner_gradapter(image_url):
@@ -64,11 +70,6 @@ async def captioner_gradapter(image_url):
         result = await asyncio.to_thread(captioner, image_url)
         caption = result[0]["generated_text"]
     return caption
-
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
 
 
 # the image url is passed in as a "url" tag in the json body
@@ -116,3 +117,9 @@ async def readyz():
     if not is_initialized.is_set():
         raise HTTPException(status_code=503, detail="Initialization in progress")
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=7860)

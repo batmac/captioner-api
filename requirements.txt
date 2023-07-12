@@ -5,3 +5,6 @@ torch
 accelerate
 
 uvicorn
+gradio
+
+pillow-heif
