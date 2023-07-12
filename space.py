@@ -2,9 +2,11 @@ import asyncio
 import logging
 import os
 import time
-from typing import List, Union
+from io import BytesIO
 
 import gradio as gr
+import PIL
+import requests
 import torch
 from fastapi import FastAPI, HTTPException
 from pillow_heif import register_heif_opener
@@ -13,8 +15,8 @@ from transformers import pipeline
 
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
-MAX_URLS = int(os.getenv("MAX_URLS", 5))
-MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", 200))
+# MAX_URLS = int(os.getenv("MAX_URLS", 5))
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", 2000))
 # https://huggingface.co/models?pipeline_tag=image-to-text&sort=likes
 MODEL = os.getenv("MODEL", "Salesforce/blip-image-captioning-large")
 # simpler model: "ydshieh/vit-gpt2-coco-en"
@@ -59,10 +61,6 @@ def load_model():
     is_initialized.set()
 
 
-class Image(BaseModel):
-    url: Union[HttpUrl, List[HttpUrl]]  # url can be a string or a list of strings
-
-
 @app.on_event("startup")
 async def startup_event():
     global app
@@ -92,37 +90,32 @@ async def captioner_gradapter(image, url):
     return caption
 
 
+class Image(BaseModel):
+    url: HttpUrl
+
+
 # the image url is passed in as a "url" tag in the json body
 @app.post("/caption/")
 async def create_caption(image: Image):
-    if isinstance(image.url, list) and len(image.url) > MAX_URLS:
-        logger.debug(
-            f"Request with more than {MAX_URLS} URLs received. Refusing the request."
-        )
-
-        raise HTTPException(
-            status_code=400,
-            detail=f"Maximum of {MAX_URLS} URLs can be processed at once",
-        )
     async with lock:
         await is_initialized.wait()  # Wait until initialization is completed
-
-        start_time = time.time()
+        start_time = time.perf_counter()
         # get the image url from the json body
         image_url = image.url
+        logger.debug("Received request for image: %s", image_url)
         try:
-            caption = await asyncio.to_thread(captioner, image_url)
+            caption = await asyncio.to_thread(captioner, str(image_url))
         except Exception as e:
             logger.error("Error during caption generation: %s", str(e))
             raise HTTPException(
                 status_code=500,
                 detail="An error occurred during caption generation. Please try again later.",
             )
-        end_time = time.time()
+        end_time = time.perf_counter()
         duration = end_time - start_time
         logger.debug("Captioning completed. Time taken: %s seconds.", duration)
 
-        return {"caption": caption, "duration": duration}
+        return {"caption": caption[0]["generated_text"], "duration": duration}
 
 
 # add liveness probe
