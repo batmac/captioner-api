@@ -3,15 +3,13 @@ import logging
 import os
 import time
 from io import BytesIO
-from typing import Optional
 
 import gradio as gr
 import PIL
-import requests
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pillow_heif import register_heif_opener
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 from transformers import pipeline
 
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
@@ -93,22 +91,25 @@ async def captioner_gradapter(image, url):
     return caption
 
 
-class Image(BaseModel):
-    url: Optional[HttpUrl] = None
-    data: Optional[bytes] = None
+class CaptionResponse(BaseModel):
+    caption: str
+    duration: float
 
 
-# the image url is passed in as a "url" tag in the json body
-@app.post("/caption/")
-async def create_caption(image: Image):
+@app.post("/caption/", response_model=CaptionResponse)
+async def create_caption(
+    url: str = Form(default=None),
+    data: UploadFile = File(default=None),
+):
     async with lock:
         await is_initialized.wait()  # Wait until initialization is completed
         start_time = time.perf_counter()
         # get the image url from the json body
-        if image.url is not None:
-            image = image.url
-        elif image.data is not None:
-            image = Image.open(BytesIO(image.data))
+        if url is not None:
+            image = url
+        elif data is not None:
+            content = await data.read()
+            image = PIL.Image.open(BytesIO(content))
         else:
             raise HTTPException(
                 status_code=400,
@@ -116,7 +117,7 @@ async def create_caption(image: Image):
             )
         logger.debug("Received request for image: %s", image)
         try:
-            caption = await asyncio.to_thread(captioner, str(image))
+            caption = await asyncio.to_thread(captioner, image)
         except Exception as e:
             logger.error("Error during caption generation: %s", str(e))
             raise HTTPException(

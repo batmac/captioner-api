@@ -10,3 +10,4 @@ gradio
 pydantic
 
 pillow-heif
+python-multipart
