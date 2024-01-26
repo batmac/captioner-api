@@ -73,7 +73,6 @@ async def startup_event():
         inputs=[gr.Image(type="pil"), gr.Textbox(lines=1, placeholder="Image URL")],
         outputs=["text"],
         allow_flagging="never",
-        interpretation="default",
     )
     app = gr.mount_gradio_app(app, iface, path="/")
 
