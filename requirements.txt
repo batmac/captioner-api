@@ -1,6 +1,3 @@
-fastapi
-pillow
-requests
 transformers
 torch
 accelerate
@@ -10,4 +7,3 @@ gradio
 pydantic
 
 pillow-heif
-python-multipart

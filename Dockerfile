@@ -15,6 +15,6 @@ COPY captioner.py /app/captioner.py
 WORKDIR /app
 ARG MODEL="Salesforce/blip-image-captioning-base"
 ENV MODEL=${MODEL}
-ENTRYPOINT ["/venv/bin/python3", "/venv/bin/uvicorn", "--host", "0.0.0.0", "captioner:app"]
-EXPOSE 8000
+ENTRYPOINT ["/venv/bin/python3", "captioner.py"]
+EXPOSE 7860
 USER nonroot:nonroot
